@@ -35,6 +35,8 @@ Thumbs.db
 .idea/
 *.suo
 *.ntvs*
-*.njsproj
-*.sln
 *.sw?
+
+# Environment variables
+.env
+backend/.env

@@ -1,148 +1,113 @@
 # Smart Agri-Monitor & Optimization System
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688.svg?style=flat&logo=FastAPI)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/React-18-61DAFB.svg?style=flat&logo=React)](https://react.dev/)
-[![Scikit-Learn](https://img.shields.io/badge/scikit--learn-1.8-F7931E.svg?style=flat&logo=scikit-learn)](https://scikit-learn.org/)
-
-An IoT-powered smart irrigation and precision agriculture system designed to monitor soil health, ambient variables, and run predictive machine learning algorithms to optimize watering schedules. It is custom-built to align with **Turkey's Agri-Tech Modernization and Water Resilience priorities for 2026**.
+An IoT-powered precision irrigation and soil health monitoring platform. This system utilizes ESP32 edge processing telemetry buffers, a FastAPI backend (featuring JWT authentication, time-series data modeling, and a Random Forest irrigation scheduler), real-time Tomorrow.io weather forecasts, a Gemini 2.5 Flash AI Agronomic Advisor, and a stark brutalist React/TypeScript dashboard displaying high-performance metrics.
 
 ---
 
 ## 🏗️ System Architecture
 
-Our system is structured into three highly optimized components:
-1. **ESP32 Edge Processing (Firmware)**: Polls high-frequency sensors, cleans noise using a sliding window moving average, and triggers immediate alarms if a drought or thermal anomaly occurs. Otherwise, it throttles transmissions to conserve energy.
-2. **FastAPI Robust Backend (Python / SQLite)**: Provides secure multi-tenant farm authentication, manages time-series telemetry streams, and serves the dual-mode irrigation predictive engine.
-3. **Brutalist React Dashboard (TypeScript / Vanilla CSS)**: A stark, stripped-back, high-performance visual dashboard that emphasizes raw data and actionable insights without visual fluff.
-
 ```mermaid
 graph TD
-    ESP32[ESP32 Smart Node] -->|Moving Average Filter| AnomalyCheck{Anomaly?}
-    AnomalyCheck -->|Yes: Low Moisture/High Temp| Alert[Immediate HTTP Post]
-    AnomalyCheck -->|No: Nominal Conditions| Throttled[Throttled Post every 5 min]
-    Alert --> FastAPI[FastAPI Backend]
-    Throttled --> FastAPI
-    FastAPI -->|JWT Secured Auth| DB[(Time-Series SQLite DB)]
-    FastAPI -->|Procedural Math + ML Forecast| Engine[Predictive Irrigation Engine]
-    Dashboard[Brutalist React UI] <-->|REST API| FastAPI
+    ESP32[ESP32 / Telemetry Simulator] -->|Moving-Average & Edge Filtering| Backend[FastAPI Backend]
+    Backend -->|Read/Write| DB[(SQLite Database)]
+    Backend -->|Live Weather Queries| Tomorrow[Tomorrow.io Weather API]
+    Backend -->|Telemetry Analysis & Q&A| Gemini[Google Gemini 2.5 Flash API]
+    Backend -->|Irrigation Prediction| ML[Random Forest Regressor]
+    Dashboard[React TypeScript Dashboard] -->|REST API & JWT Auth| Backend
 ```
 
 ---
 
-## ⚡ The Edge Processing Logic (ESP32 C++)
+## 🌟 Key Features
 
-Instead of flooding the server with raw high-frequency telemetry, the ESP32 performs local computations:
-* **Sliding Window Moving Average**: A buffer of $N=10$ continuous sensor samples is kept locally. It smooths out analog sensor noises and transient fluctuations before sending data.
-* **Adaptive Telemetry Throttling**:
-  * **Nominal mode**: Data is processed and transmitted at a power-saving interval (e.g., every 5 minutes).
-  * **Emergency mode**: If soil moisture drops below critical levels ($< 15.0\%$) or temperature indicates heat-stress ($> 45.0^\circ\text{C}$), the node immediately bypasses the sleep cycle to transmit an anomaly alert.
-
-### ESP32 Pin Connections & Schematic
-
-```
-             ┌───────────────────────────────┐
-             │            ESP32              │
-             │                               │
-             │  3.3V ─── [VCC Soil/pH/DHT]   │
-             │  GND  ─── [GND Soil/pH/DHT]   │
-             │  GPIO34 ─ [Signal Soil Moist] │
-             │  GPIO35 ─ [Signal pH Probe]   │
-             │  GPIO32 ─ [Signal DHT22 Temp] │
-             └───────────────────────────────┘
-```
+1. **Edge-Filtered Telemetry**: Moving-average filter (window = 10 samples) runs at the edge to reduce ambient sensor noise before transmission.
+2. **Adaptive Anomaly Alerts**: Rapid soil moisture depletion, high temperatures, or acidic/alkaline pH level spikes trigger immediate edge anomaly alerts.
+3. **ML-Driven Irrigation Schedules**: Random Forest regressor schedules optimal watering durations by evaluating current soil profiles alongside a 3-day precipitation forecast.
+4. **Tomorrow.io Live Weather**: Real-world weather integration replaces static mocks to gauge exact local temperatures, humidity, and cloud covers.
+5. **Gemini AI Agronomic Advisor**: Generates live, context-aware soil assessments and answers operator inquiries (e.g. crop suitability, soil neutralization remedies) directly from dashboard metrics.
 
 ---
 
-## 🧮 Mathematical & Predictive Irrigation Models
+## ⚙️ Mathematical & Algonomic Design
 
-The **Predictive Irrigation Engine** supports two operational modes:
+### 1. Edge Moving-Average Filtering
+To filter out noise from low-cost analog moisture and pH sensors, the ESP32 firmware manages a circular buffer of the last 10 readings ($N=10$):
+$$\overline{x} = \frac{1}{N} \sum_{i=1}^{N} x_i$$
+If an anomaly is detected (outside baseline thresholds), it is pushed immediately to skip standard transmission throttling.
 
-### 1. Procedural Evapotranspiration Model (Hargreaves Equation)
-Estimates the Reference Evapotranspiration ($ET_0$) in millimeters per day based on ambient temperature and relative humidity:
-
-$$ET_0 = 0.0023 \cdot (T_{\text{mean}} + 17.8) \cdot (T_{\text{max}} - T_{\text{min}})^{0.5} \cdot R_a$$
-
-We approximate the diurnal evapotranspiration rate dynamically using real-time node temperatures and relative humidity ($RH$):
-
-$$\text{Humidity Factor} = 1.0 - \frac{RH}{100.0}$$
-
-$$\text{Watering Duration} = (\text{Target Moisture} - \text{Current Moisture}) \cdot C_{\text{soil}} \cdot (1.0 + ET_0 \cdot 0.1)$$
-
-### 2. Machine Learning Predictive Model
-Integrates weather forecast APIs (diurnally simulated in this framework). We train a **Scikit-Learn Random Forest Regressor** using:
-* `current_soil_moisture`
-* `temperature`
-* `humidity`
-* `ph`
-* `precipitation_probability`
-* `cloud_cover`
-
-**Water Resilience Feature**: If the 3-day weather forecast indicates a high probability of rain ($&gt;70\%$), the ML engine preemptively cuts irrigation by **90%**, or **50%** for moderate probability, preserving regional water reservoirs.
+### 2. Reference Evapotranspiration ($ET_0$)
+The irrigation model computes soil moisture depletion rates using a simplified Hargreaves/Penman-Monteith equation based on current temperature ($T$), relative humidity ($RH$), and solar radiation ($R_a$):
+$$ET_0 = 0.0018 \cdot (T + 17.8) \cdot \sqrt{R_a} \cdot \left(1.0 - \frac{RH}{100.0}\right)$$
+Water loss coordinates drive our predictive engine to adjust watering schedules.
 
 ---
 
-## 🚀 Installation & Running Locally
+## 🚀 Setup & Execution Guide
 
-### Prerequisites
-* Python 3.10+ (Tested up to Python 3.14)
-* Node.js v18+ & npm
+### Prerequisite API Keys
+To enable live weather and AI advisory panels, retrieve and configure:
+1. **Google Gemini API Key**: Obtain from [Google AI Studio](https://aistudio.google.com/).
+2. **Tomorrow.io API Key**: Obtain from the [Tomorrow.io Development Portal](https://app.tomorrow.io/).
 
-### 1. Set Up Backend
+---
+
+### 1. Backend Server Setup
+The backend runs on Python 3.x using FastAPI and SQLite.
+
 ```bash
-# Navigate to backend directory
 cd backend
 
-# Create virtual environment and activate
+# Create & activate virtual environment (if not already present)
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# Install requirements
-pip install --prefer-binary -r requirements.txt
+# Install dependencies
+pip install -r requirements.txt
 
-# Run tests to verify the setup
-python tests.py -v
+# Export your API credentials
+export GEMINI_API_KEY="your_gemini_api_key_here"
+export TOMORROW_API_KEY="your_tomorrow_api_key_here"
 
-# Start FastAPI server
-uvicorn main:app --reload --port 8000
+# Start the uvicorn server
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
-The backend API documentation will be available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+*The API docs will be available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).*
 
-### 2. Set Up Frontend Dashboard
+---
+
+### 2. Telemetry Simulator Setup
+Simulates ESP32 node behavior by posting edge-filtered signals to the backend.
+
 ```bash
-# Open a new terminal and navigate to frontend directory
+# Return to root, then run:
+./venv/bin/python -u firmware/simulator.py --url http://127.0.0.1:8000 --interval 3
+```
+
+---
+
+### 3. Frontend Dashboard Setup
+The dashboard is built with Vite, React, and TypeScript.
+
+```bash
 cd frontend
 
-# Install Node dependencies
+# Install Node modules
 npm install
 
-# Run Vite dev server (proxies API requests to 127.0.0.1:8000 automatically)
+# Run the Vite development server
 npm run dev
 ```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+*Access the brutalist console at [http://localhost:5174/](http://localhost:5174/).*
 
-### 3. Run ESP32 Telemetry Simulator
+**Default Operator Credentials:**
+*   **Username**: `aibek`
+*   **Password**: `password123`
+
+---
+
+## 🧪 Running Automated Tests
+Run unit tests checking DB persistence, JWT authorization rules, and prediction models:
+
 ```bash
-# Open a new terminal, navigate to firmware, and activate venv
-cd firmware
-source ../venv/bin/activate
-
-# Start the simulator to feed real-time physics data into the system
-python simulator.py
+./venv/bin/python backend/tests.py
 ```
-
-*Note: Register an account, create a farm, and add a device on the React UI first. Copy the generated `api_key` and paste it into the `DEVICE_NODES` array inside `firmware/simulator.py` to stream live data.*
-
----
-
-## 📈 Sustainable Impact
-
-By using localized weather predictions and soil moisture telemetry, smart farms achieve:
-* **Up to 25% Reduction** in total water usage.
-* **Higher Yields** by preventing soil acidification and high-temperature crop stress.
-* **Edge Bandwidth Savings** of over **90%** by relying on moving-average buffers and throttled nominal reporting.
-
----
-
-## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

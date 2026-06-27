@@ -6,9 +6,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import LineChart from '../components/LineChart';
 import {
   telemetryApi, weatherApi, predictionsApi, wateringApi,
-  devicesApi, farmsApi,
+  devicesApi, farmsApi, aiApi,
 } from '../api/client';
-import type { Farm, Device, Telemetry, Weather, Prediction } from '../api/client';
+import type { Farm, Device, Telemetry, Weather, Prediction, AiAdvice } from '../api/client';
 
 const POLL_MS = 5000; // refresh every 5 s
 
@@ -37,8 +37,36 @@ export default function DashboardPage() {
   const [predMode, setPredMode]     = useState<'ml' | 'math'>('ml');
   const [watering, setWatering]     = useState(false);
   const [lastWatered, setLastWatered] = useState<string | null>(null);
+  
+  // AI Advisor state
+  const [aiAdvice, setAiAdvice]     = useState<AiAdvice | null>(null);
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiLoading, setAiLoading]   = useState(false);
+  const [aiError, setAiError]       = useState('');
+  
   const seenAnomaly = useRef<Set<number>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchAiAdvice = useCallback(async (q?: string) => {
+    if (!selectedDevice) return;
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const data = await aiApi.getAdvice(selectedDevice, q);
+      setAiAdvice(data);
+      if (q) setAiQuestion('');
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'AI connection failed');
+    } finally {
+      setAiLoading(false);
+    }
+  }, [selectedDevice]);
+
+  useEffect(() => {
+    if (selectedDevice) {
+      fetchAiAdvice();
+    }
+  }, [selectedDevice, fetchAiAdvice]);
 
   // ── Fetch farms & devices on mount ──────────────────────────────
   useEffect(() => {
@@ -354,6 +382,113 @@ export default function DashboardPage() {
               Last watered: {lastWatered}
             </p>
           )}
+        </div>
+      </div>
+
+      {/* ── Gemini AI Advisor ── */}
+      <div className="card mb-4" style={{ border: '4px solid #000', boxShadow: '4px 4px 0px #000', background: '#0a0a0a', color: '#fff' }}>
+        <div className="card-header" style={{ borderBottom: '2px solid #1c1c1c', paddingBottom: '0.75rem', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span className="card-title" style={{ color: '#39ff14', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.2rem', fontWeight: 'bold' }}>
+            🤖 GEMINI AI AGRI-ADVISOR
+          </span>
+          <span className="badge badge-green" style={{ background: '#39ff14', color: '#000', border: '2px solid #000', fontWeight: 'bold' }}>
+            Powered by Gemini 1.5 Flash
+          </span>
+        </div>
+        
+        <div className="grid-2" style={{ gap: '1.5rem' }}>
+          {/* Left half: AI Assessment Output */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <h3 style={{ fontSize: '0.9rem', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              ✦ Live Telemetry Assessment
+            </h3>
+            
+            {aiLoading && !aiAdvice ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: '#888', fontStyle: 'italic', fontFamily: 'var(--mono)', border: '2px dashed #333' }}>
+                <span className="pulse-dot" style={{ display: 'inline-block', marginRight: 10 }} />
+                Analyzing soil profile & forecast models...
+              </div>
+            ) : aiError ? (
+              <div style={{ padding: '1rem', border: '2px solid #ff2d2d', color: '#ff2d2d', fontSize: '0.8rem', fontFamily: 'var(--mono)' }}>
+                ⚠ Error fetching advice: {aiError}
+              </div>
+            ) : aiAdvice ? (
+              <div style={{
+                background: '#111',
+                border: '2px solid #333',
+                padding: '1rem',
+                fontSize: '0.85rem',
+                lineHeight: '1.5',
+                fontFamily: 'var(--mono)',
+                color: '#ececec',
+                maxHeight: '220px',
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap'
+              }}>
+                {aiAdvice.advice}
+              </div>
+            ) : (
+              <p className="text-muted text-sm" style={{ fontStyle: 'italic' }}>No advice fetched yet.</p>
+            )}
+            
+            {aiAdvice && (
+              <p className="text-xs text-muted" style={{ fontFamily: 'var(--mono)', marginTop: '0.2rem' }}>
+                Last analysis generated: {new Date(aiAdvice.timestamp).toLocaleString()}
+              </p>
+            )}
+          </div>
+          
+          {/* Right half: Chat / Inquiry Form */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <h3 style={{ fontSize: '0.9rem', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                ✦ Ask Custom Agronomic Questions
+              </h3>
+              <p className="text-xs text-muted" style={{ marginBottom: '0.5rem' }}>
+                Ask Gemini about crop recommendations, soil treatments, or abnormal metric analysis.
+              </p>
+              
+              <textarea
+                className="input-field"
+                style={{
+                  width: '100%',
+                  height: '100px',
+                  background: '#000',
+                  color: '#fff',
+                  border: '2px solid #333',
+                  padding: '0.75rem',
+                  fontSize: '0.85rem',
+                  fontFamily: 'var(--mono)',
+                  resize: 'none',
+                }}
+                placeholder="e.g., 'What crops would be best suited for this pH level?' or 'How does the forecasted rain affect my tomato patch?'"
+                value={aiQuestion}
+                onChange={e => setAiQuestion(e.target.value)}
+                disabled={aiLoading}
+              />
+            </div>
+            
+            <div className="flex gap-2" style={{ marginTop: '0.5rem' }}>
+              <button
+                className="btn btn-green btn-lg"
+                style={{ flex: 1, justifyContent: 'center', background: '#39ff14', color: '#000', border: '2px solid #000', fontWeight: 'bold' }}
+                disabled={aiLoading || !selectedDevice || !aiQuestion.trim()}
+                onClick={() => fetchAiAdvice(aiQuestion)}
+              >
+                {aiLoading ? '[ CONSULTING GEMINI... ]' : '[ GET ADVISORY INSIGHT → ]'}
+              </button>
+              
+              <button
+                className="btn btn-sm"
+                style={{ background: '#000', color: '#888', border: '2px solid #333' }}
+                disabled={aiLoading || !selectedDevice}
+                onClick={() => fetchAiAdvice()}
+                title="Refresh Assessment"
+              >
+                ⟳ RE-ASSESS SOIL
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

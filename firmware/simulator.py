@@ -28,9 +28,8 @@ except ImportError:
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 DEVICE_NODES = [
-    {"name": "solana",                 "api_key": "node-9f88150f2d7e"},
-    {"name": "Node-B  (Olive Grove)",  "api_key": "REPLACE_WITH_DEVICE_API_KEY_2"},
-    {"name": "Node-C  (Cotton Field)", "api_key": "REPLACE_WITH_DEVICE_API_KEY_3"},
+    {"name": "salam cola",             "api_key": "node-64acb5461493"},
+    {"name": "solana",                 "api_key": "node-9f88130f2d7e"},
 ]
 
 WINDOW_SIZE = 10   # moving-average window — mirrors firmware constant

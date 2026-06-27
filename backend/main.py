@@ -9,6 +9,23 @@ import database
 import models
 import auth
 import prediction_engine
+import os
+import requests
+
+# Load environment variables from .env if it exists
+if os.path.exists(".env"):
+    try:
+        with open(".env") as f:
+            for line in f:
+                if line.strip() and not line.startswith("#"):
+                    parts = line.strip().split("=", 1)
+                    if len(parts) == 2:
+                        os.environ[parts[0].strip()] = parts[1].strip()
+    except Exception:
+        pass
+
+TOMORROW_API_KEY = os.environ.get("TOMORROW_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Initialize database tables
 models.Base.metadata.create_all(bind=database.engine)
@@ -290,27 +307,76 @@ def get_watering_logs(
 @app.get("/api/weather")
 def get_weather_forecast(lat: float = 38.4189, lon: float = 27.1287):
     """
-    Returns simulated weather forecast for Turkey (defaults to Izmir region: 38.4189° N, 27.1287° E).
-    Changes forecast conditions based on current hours to simulate real environmental changes.
+    Returns weather forecast for Turkey (defaults to Izmir region: 38.4189° N, 27.1287° E)
+    fetched in real time from Tomorrow.io. Falls back to simulated weather if Tomorrow.io is down/rate-limited.
     """
     now = datetime.datetime.utcnow()
-    hour = now.hour
     
-    # Generate variations based on hours (diurnal cycle)
-    # We will simulate: temperature range 18-35C, humidity 30-85%
+    # Try calling Tomorrow.io
+    if TOMORROW_API_KEY:
+        try:
+            url = f"https://api.tomorrow.io/v4/weather/realtime?location={lat},{lon}&apikey={TOMORROW_API_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                values = data.get("data", {}).get("values", {})
+                
+                # Weather code map
+                weather_code = values.get("weatherCode", 1000)
+                weather_codes_map = {
+                    1000: "Sunny",
+                    1100: "Mostly Clear",
+                    1101: "Partly Cloudy",
+                    1102: "Mostly Cloudy",
+                    1001: "Cloudy",
+                    2000: "Fog",
+                    2100: "Light Fog",
+                    4000: "Drizzle",
+                    4001: "Rain Expected",
+                    4200: "Light Rain",
+                    4201: "Heavy Rain",
+                    5000: "Snow",
+                    5001: "Flurries",
+                    5100: "Light Snow",
+                    5101: "Heavy Snow",
+                    6000: "Freezing Drizzle",
+                    6001: "Freezing Rain",
+                    6200: "Light Freezing Rain",
+                    6201: "Heavy Freezing Rain",
+                    7000: "Ice Pellets",
+                    7101: "Heavy Ice Pellets",
+                    7102: "Light Ice Pellets",
+                    8000: "Thunderstorm"
+                }
+                condition = weather_codes_map.get(weather_code, "Sunny")
+                
+                return {
+                    "location": "Izmir, Turkey",
+                    "latitude": lat,
+                    "longitude": lon,
+                    "temperature": round(values.get("temperature", 25.0), 1),
+                    "humidity": round(values.get("humidity", 50.0), 1),
+                    "precipitation_probability": float(values.get("precipitationProbability", 0.0)),
+                    "cloud_cover": float(values.get("cloudCover", 0.0)),
+                    "condition": condition,
+                    "timestamp": now
+                }
+        except Exception:
+            pass  # Fallback to simulated logic below
+
+    # --- Fallback Simulated Weather ---
+    hour = now.hour
     base_temp = 25.0
     temp_variation = 7.0 * math_sine_helper(hour)
     temp = round(base_temp + temp_variation, 1)
-    
     humidity = round(60.0 - 20.0 * math_sine_helper(hour), 1)
     
-    # Simulate a cloud/rain cycle (changes every few days or hours)
     day_cycle = (now.day + now.hour // 6) % 3
     if day_cycle == 0:
         precip_prob = 75.0
         cloud_cover = 90.0
         condition = "Rain Expected"
-        temp -= 4.0 # cooler when rainy
+        temp -= 4.0
     elif day_cycle == 1:
         precip_prob = 15.0
         cloud_cover = 40.0
@@ -321,7 +387,7 @@ def get_weather_forecast(lat: float = 38.4189, lon: float = 27.1287):
         condition = "Sunny"
         
     return {
-        "location": "Izmir, Turkey",
+        "location": "Izmir, Turkey (Simulated)",
         "latitude": lat,
         "longitude": lon,
         "temperature": temp,
@@ -418,3 +484,134 @@ def trigger_training(current_user: models.User = Depends(auth.get_current_user))
         return {"status": "success", "message": "Model trained successfully on generated crop metrics."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
+class AiAdviceRequest(BaseModel):
+    device_id: int
+    question: Optional[str] = None
+
+class AiAdviceResponse(BaseModel):
+    advice: str
+    timestamp: datetime.datetime
+
+@app.post("/api/ai/advise", response_model=AiAdviceResponse)
+def get_ai_advice(
+    req: AiAdviceRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(database.get_db)
+):
+    # Verify device exists and belongs to user
+    device = db.query(models.Device).filter(models.Device.id == req.device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+        
+    farm = db.query(models.Farm).filter(models.Farm.id == device.farm_id, models.Farm.user_id == current_user.id).first()
+    if not farm:
+        raise HTTPException(status_code=403, detail="Unauthorized device access")
+        
+    # Get latest telemetry
+    latest_telemetry = db.query(models.Telemetry).filter(
+        models.Telemetry.device_id == req.device_id
+    ).order_by(models.Telemetry.timestamp.desc()).first()
+    
+    moisture = latest_telemetry.soil_moisture if latest_telemetry else 50.0
+    temp = latest_telemetry.temperature if latest_telemetry else 25.0
+    humidity = latest_telemetry.humidity if latest_telemetry else 50.0
+    ph = latest_telemetry.ph if latest_telemetry else 6.5
+    
+    # Get weather
+    try:
+        weather = get_weather_forecast()
+    except Exception:
+        weather = {
+            "temperature": temp,
+            "humidity": humidity,
+            "precipitation_probability": 0.0,
+            "cloud_cover": 0.0,
+            "condition": "Sunny"
+        }
+        
+    # Formulate Prompt
+    weather_desc = f"{weather.get('condition', 'Sunny')} ({weather.get('temperature', 25.0)}°C, Humidity {weather.get('humidity', 50.0)}%, Rain Prob {weather.get('precipitation_probability', 0.0)}%, Cloud Cover {weather.get('cloud_cover', 0.0)}%)"
+    
+    prompt = (
+        "You are the Smart Agri-Monitor AI Advisor.\n"
+        "Here is the current state of the farm node:\n"
+        f"- Device Name: {device.name}\n"
+        f"- Soil Moisture: {moisture:.1f}% (volumetric)\n"
+        f"- Soil pH: {ph:.2f}\n"
+        f"- Air Temperature: {temp:.1f}°C\n"
+        f"- Air Humidity: {humidity:.1f}%\n"
+        f"- Current Weather Forecast: {weather_desc}\n\n"
+    )
+    
+    if req.question:
+        prompt += f"The farm supervisor has a specific question:\n\"{req.question}\"\n\n"
+        prompt += (
+            "Please answer this question directly, factoring in the current sensor telemetry and weather metrics. "
+            "Address the user directly as a farming supervisor. Keep it concise (within 2-3 short paragraphs or bullet points) and practical."
+        )
+    else:
+        prompt += (
+            "Please provide a concise, high-value agronomic assessment and recommendations based on these conditions. "
+            "Highlight soil moisture status (drought vs. waterlogged), pH health (optimal ranges are 6.0-7.5 for most crops), "
+            "and suggest irrigation adjustments if necessary. "
+            "Format your response as clean Markdown bullet points. Address the user directly as a farming supervisor. "
+            "Keep the response brief (max 3-4 bullet points)."
+        )
+        
+    # Query Gemini API
+    advice = ""
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt}
+                        ]
+                    }
+                ]
+            }
+            resp = requests.post(url, json=payload, timeout=8)
+            if resp.status_code == 200:
+                resp_data = resp.json()
+                candidates = resp_data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        advice = parts[0].get("text", "").strip()
+        except Exception:
+            pass
+            
+    # Fallback to local rule-based advice if Gemini fails/is down/no key
+    if not advice:
+        recs = []
+        if moisture < 25.0:
+            recs.append("⚠️ **Critical Drought Warning**: Soil moisture is extremely low. Irrigate immediately to prevent crop wilting.")
+        elif moisture < 45.0:
+            recs.append("💧 **Low Moisture Alert**: Soil is dry. Schedule a moderate watering cycle soon.")
+        elif moisture > 80.0:
+            recs.append("🌊 **Waterlogged Soil**: Soil is overly saturated. Suspend irrigation to prevent root rot and aerate the soil.")
+        else:
+            recs.append("✅ **Moisture Nominal**: Soil moisture is in the optimal range (45-75%) for crop growth.")
+            
+        if ph < 5.5:
+            recs.append("🧪 **Acidic Soil Alert**: pH level is acidic. Consider applying agricultural lime (calcium carbonate) to raise pH.")
+        elif ph > 7.5:
+            recs.append("🧪 **Alkaline Soil Alert**: pH level is alkaline. Consider applying elemental sulfur or organic compost to lower pH.")
+        else:
+            recs.append("✅ **pH Balanced**: Soil pH is neutral and highly suitable for nutrient absorption.")
+            
+        rain_prob = weather.get("precipitation_probability", 0.0)
+        if rain_prob > 50.0:
+            recs.append(f"🌧️ **Precipitation Forecasted**: High probability of rain ({rain_prob:.0f}%). The irrigation schedule is automatically scaled back to conserve water.")
+            
+        advice = "### Fallback AI Agronomic Assessment\n" + "\n".join(recs)
+        if req.question:
+            advice += f"\n\n*(Note: Gemini API is currently unavailable. Your question was: '{req.question}')*"
+            
+    return {
+        "advice": advice,
+        "timestamp": datetime.datetime.utcnow()
+    }

@@ -117,3 +117,16 @@ export const predictionsApi = {
   train: () =>
     request<{ status: string; message: string }>('/api/predictions/train', { method: 'POST' }),
 };
+
+// ── AI Advisor ──────────────────────────────────────────────────────
+export interface AiAdvice {
+  advice: string;
+  timestamp: string;
+}
+export const aiApi = {
+  getAdvice: (device_id: number, question?: string) =>
+    request<AiAdvice>('/api/ai/advise', {
+      method: 'POST',
+      body: JSON.stringify({ device_id, question }),
+    }),
+};
